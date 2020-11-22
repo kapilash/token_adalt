@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Hemanth Kapila <kapilash@outlook.com>"]
 edition = "2018"
 license = "Apache-2.0"
-
+description = "Rust library that enables you to acquire security token from Azure Active Directory."
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
