@@ -87,6 +87,7 @@ pub mod adalt {
         /// asynchronous method to acquire token. If the token's expiration is _sufficiently_ in future, the same is reused.
         /// # Example
         /// ```
+        /// use token_adalt::adalt;
         /// let tenant_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
         /// let client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
         /// let cert_location = "/path/to/cert/file/abcdefghijklmnopqrstuvw.xyz";
@@ -94,7 +95,8 @@ pub mod adalt {
         /// let creds = adalt::Credentials::Pkcs12 { path: String::from(cert_location), password: String::from(cert_password), x5c:false };
         /// let resource = "https://resource.blah.com";
         /// let mut ctx = adalt::Context::new(tenant_id, client_id, resource, creds);
-        ///  let future = ctx.get_token().await?;
+        ///  
+        ///  // now continue by calling `get_token`;
         /// ```
         pub async fn get_token(&mut self) -> Result<Token, AuthenticationError> {
             match &self.token {
@@ -326,5 +328,27 @@ mod tests {
             Err(e) => panic!("An error occured: {}", e)
         }
 
+    }
+
+    #[test]
+    fn client_secret_works() {
+        let tenant_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
+        let client_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
+        let creds = adalt::Credentials::Secret( "XXXXXXXXXXX".to_string()); 
+        let resource = "https://xxxxxx.yyy.zzzz.com";
+
+        let mut ctx = adalt::Context::new(tenant_id, client_id, resource, creds);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        
+        let future = ctx.get_token();
+        match rt.block_on(future) {
+            Ok(token) => println!("token = {:#?}", token),
+            Err(e) => panic!("An error occured: {}", e)
+        }
+        let future = ctx.get_token();
+        match rt.block_on(future) {
+            Ok(token) => println!("token = {:#?}", token),
+            Err(e) => panic!("An error occured: {}", e)
+        }
     }
 }
