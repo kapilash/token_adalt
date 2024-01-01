@@ -77,10 +77,10 @@ pub mod adalt {
         }
 
         /// method just to get the jwt
-        fn jwt(&self) -> String {
+        fn jwt(&self) -> Result<String, AuthenticationError> {
             match &self.credentials {
                 Credentials::Pkcs12 {path:p, password:pss, x5c:is_x5c} => extract_jwt(&p, &pss, &self.tenant_id, &self.client_id, *is_x5c),
-                _  => panic!("jwt is relevant only for pfx based credentials!")
+                _  =>  Err(AuthenticationError { info: "internal error: jwt is relevent only for pfx".to_string()})
             }
         }
 
@@ -114,18 +114,10 @@ pub mod adalt {
             }
 
             let response = match &self.credentials {
-                Credentials::Pkcs12{path:p, password:pss, x5c:is_x5c} => get_cert_token(&self).await,
-                Credentials::Secret(_)    =>  get_secret_token(&self).await
+                Credentials::Pkcs12{path:_, password:_, x5c:_} => get_cert_token(&self).await?,
+                Credentials::Secret(_)    =>  get_secret_token(&self).await?
             };
 
-            match response {
-                Ok(ref r) => {},
-                Err(error) => {
-                    let msg = format!("{:?}", error);
-                    return Err(AuthenticationError{ info:msg});
-                }
-            }
-            let response = response.unwrap();
             let v: Value = serde_json::from_str(&response).expect("response from AD is not a valid json");
             let token_type = match v["token_type"].as_str() {
                 Some(t) => String::from(t),
@@ -207,30 +199,34 @@ pub mod adalt {
         base64_url(pl)
     }
     
-    fn extract_jwt(file_name: &str, password: &str, tenant_id: &str, client_id: &str, is_x5c:bool) -> String {
+    fn extract_jwt(file_name: &str, password: &str, tenant_id: &str, client_id: &str, is_x5c:bool) -> Result<String, AuthenticationError> {
         let mut f = std::fs::File::open(file_name).expect("file not found");
         let mut pfx_contents = Vec::new();
         f.read_to_end(&mut pfx_contents).expect("failed to read contents");
-        let mut pfx = openssl::pkcs12::Pkcs12::from_der(&pfx_contents).expect("could not read from der");
-        let parsed_pfx = pfx.parse(password).expect("could not parse");
-        let header = if is_x5c {
-            header_x5c(&parsed_pfx.cert)
+        let pfx = openssl::pkcs12::Pkcs12::from_der(&pfx_contents).expect("could not read from der");
+        let parsed_pfx = pfx.parse2(password).expect("could not parse");
+        if parsed_pfx.cert.is_none() || parsed_pfx.pkey.is_none() {
+            return Err(AuthenticationError { info: "unable to read cert or key from the pfx file".to_string()});
         }
-        else {
-            header_x5t(&parsed_pfx.cert)
+        let cert = parsed_pfx.cert.unwrap();
+        let pkey = parsed_pfx.pkey.unwrap();
+        let header = if is_x5c {
+            header_x5c(&cert)
+        } else {
+            header_x5t(&cert)
         };
   
         let jws = format!("{}.{}", header,payload(tenant_id, client_id));
         let jws_bytes = jws.clone().into_bytes();
-        let mut signer = openssl::sign::Signer::new(openssl::hash::MessageDigest::sha256(), &parsed_pfx.pkey).unwrap();
+        let mut signer = openssl::sign::Signer::new(openssl::hash::MessageDigest::sha256(), &pkey).unwrap();
         signer.update(&jws_bytes).unwrap();
         let signature = signer.sign_to_vec().unwrap();
         let signature = openssl::base64::encode_block(&signature);
         
-        format!("{}.{}", jws, signature)
+        Ok(format!("{}.{}", jws, signature))
     }
 
-    async fn get_secret_token(context: &Context) -> Result<String, reqwest::Error> {
+    async fn get_secret_token(context: &Context) -> Result<String, AuthenticationError> {
         let secret = match &context.credentials {
             Credentials::Secret(s) => s.to_string(),
             _ => panic!("invalid credentials for secret")
@@ -241,23 +237,35 @@ pub mod adalt {
                       ("client_id", context.client_id.clone()),
                       ("client_secret", secret),
                       ("grant_type","client_credentials".to_string())];
-        let res = context.client.post(&url).form(&params).send().await?;
-        let body = res.text().await?;
-        Ok(body)
+        let res = context.client.post(&url).form(&params).send().await;
+        if let Err(r) = res {
+            return Err(AuthenticationError { info: r.to_string() });
+        }
+        let body = res.unwrap().text().await;
+        if let Err(r) = body {
+            return Err(AuthenticationError {info : r.to_string()});
+        }
+        Ok(body.unwrap())
     }
 
     
-    async fn get_cert_token(context: &Context) -> Result<String, reqwest::Error> {
-        let jwt = context.jwt();
+    async fn get_cert_token(context: &Context) -> Result<String, AuthenticationError> {
+        let jwt = context.jwt()?;
         let url = format!("https://login.microsoftonline.com/{}/oauth2/token", context.tenant_id);
         let params = [("resource", context.resource.clone()),
                       ("client_id", context.client_id.clone()),
                       ("client_assertion_type","urn:ietf:params:oauth:client-assertion-type:jwt-bearer".to_string()),
                       ("client_assertion", jwt),
                       ("grant_type","client_credentials".to_string())];
-        let res = context.client.post(&url).form(&params).send().await?;
-        let body = res.text().await?;
-        Ok(body)
+        let res = context.client.post(&url).form(&params).send().await;
+        if let Err(x) = res {
+            return Err(AuthenticationError { info: x.to_string() });
+        }
+        let body = res.unwrap().text().await;
+        if let Err(x) = body {
+            return Err(AuthenticationError{ info: x.to_string()});
+        }
+        Ok(body.unwrap())
     }
 }
 
